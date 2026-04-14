@@ -46,8 +46,10 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
     [SerializeField] private float gravity = -90f;
     [Space]
     [SerializeField] private float slideStartSpeed = 25f;
-    [SerializeField] private float slideEndSpeed = 5f;
-    [SerializeField] private float slideFriction = 8f;
+    [SerializeField] private float slideEndSpeed = 15f;
+    [SerializeField] private float slideFriction = 0.8f;
+    [SerializeField] private float slideSteerAcceleration = 5f;
+    [SerializeField] private float slideGravity = -90f;
     [Space]
     [SerializeField] private float standHeight = 2f;
     [SerializeField] private float crouchHeight = 1f;
@@ -187,6 +189,28 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
             {
                 // Friction.
                 currentVelocity -= currentVelocity * (slideFriction * deltaTime);
+
+                //slope 
+                {
+                    var force = Vector3.ProjectOnPlane
+                    (
+                        vector: -motor.CharacterUp,
+                        planeNormal: motor.GroundingStatus.GroundNormal
+                    ) * slideGravity;
+
+                    currentVelocity -= force * deltaTime;
+                }
+
+                // Steer
+                {
+                    // Target velocity is the player's movement direction, at the current speed.
+                    var currentSpeed = currentVelocity.magnitude;
+                    var targetVelocity = groundedMovement * currentVelocity.magnitude;
+                    var steerForce = (targetVelocity - currentVelocity) * slideSteerAcceleration;
+                    // Add steer force, but clamp speed so the slide doesn't accelerate due to the direct movement input
+                    currentVelocity += steerForce;
+                    currentVelocity = Vector3.ClampMagnitude(currentVelocity, currentSpeed);
+                }
 
                 // Stop.
                 if (currentVelocity.magnitude < slideEndSpeed)
