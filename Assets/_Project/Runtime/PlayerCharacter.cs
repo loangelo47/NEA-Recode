@@ -42,6 +42,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
     [SerializeField] private float airAcceleration = 70f;
     [Space]
     [SerializeField] private float jumpSpeed = 20f;
+    [SerializeField] private float coyoteTime = 0.2f;
     [Range(0, 1f)]
     [SerializeField] private float jumpSustainGravity = 0.4f;
     [SerializeField] private float gravity = -90f;
@@ -73,6 +74,10 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
     private bool _requestedCrouch;
     private bool _requestedCrouchInAir;
 
+    private float _timeSinceUnground;
+    private float _timeSinceJumpRequest;
+    private bool _ungroundedDueToJump;
+
     private Collider[] _uncrouchOverlapResults;
 
     public void Initialize()
@@ -95,7 +100,10 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
         // Orient the input so it's relative to the direction the player is facing
         _requestedMovement = input.Rotation * _requestedMovement;
 
+        var wasRequestJump = _requestedJump;
         _requestedJump = _requestedJump || input.Jump;
+        if (_requestedJump && !wasRequestJump)
+            _timeSinceJumpRequest = 0f;
         _requestedSustainedJump = input.JumpSustain;
 
         var wasRequestingCrouch = _requestedCrouch;
@@ -140,8 +148,9 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
     public void UpdateVelocity(ref Vector3 currentVelocity, float deltaTime)
     {
         if (motor.GroundingStatus.IsStableOnGround)
-        
         {
+            _timeSinceUnground= 0f;
+            _ungroundedDueToJump = false;
             // If on the ground...
             // Snap the requested movement direction to the angle of the surface
             // the character is currently walking on.
@@ -251,6 +260,8 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
         // else in the air...
         else
         {
+            _timeSinceUnground += deltaTime;
+
             // Move.
             if (_requestedMovement.sqrMagnitude > 0f)
             {
@@ -312,18 +323,33 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
 
         if (_requestedJump)
         {
+            var grounded = motor.GroundingStatus.IsStableOnGround;
+            var canCoyoteJump = _timeSinceUnground < coyoteTime && !_ungroundedDueToJump;
+
+            if (grounded || canCoyoteJump)
+            {
             _requestedJump = false;     // Unset jump request.
             _requestedCrouch = false;   // And request the character uncrouched.
             _requestedCrouchInAir = false;
 
             // unstick the player from the ground.
             motor.ForceUnground(time: 0.1f);
+            _ungroundedDueToJump = true;
 
             // Set minimum vertical speed to the jump speed.
             var currentVerticalSpeed = Vector3.Dot(currentVelocity, motor.CharacterUp);
             var targetVerticalSpeed = Mathf.Max(currentVerticalSpeed, jumpSpeed);
             // Add the difference in current and target vertical speed to the character's velocity.
             currentVelocity += motor.CharacterUp * (targetVerticalSpeed - currentVerticalSpeed);
+            }
+            else
+            {
+                _timeSinceJumpRequest += deltaTime;
+
+                // Defer the jump request until coyote time has passed.
+                var canJumpLater = _timeSinceJumpRequest < coyoteTime;
+                _requestedJump = canJumpLater;
+            }
         }
     }
     public void UpdateRotation(ref Quaternion currentRotation, float deltaTime)
