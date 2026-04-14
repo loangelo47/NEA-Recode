@@ -15,6 +15,7 @@ public struct CharacterState
 {
     public bool Grounded;
     public Stance Stance;
+    public Vector3 Velocity;
 }
 
 public struct CharacterInput
@@ -70,6 +71,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
     private bool _requestedJump;
     private bool _requestedSustainedJump;
     private bool _requestedCrouch;
+    private bool _requestedCrouchInAir;
 
     private Collider[] _uncrouchOverlapResults;
 
@@ -95,11 +97,17 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
 
         _requestedJump = _requestedJump || input.Jump;
         _requestedSustainedJump = input.JumpSustain;
+
+        var wasRequestingCrouch = _requestedCrouch;
         _requestedCrouch = input.Crouch switch
         {
           CrouchInput.Toggle => !_requestedCrouch,
           _ => _requestedCrouch
         };
+        if ( _requestedCrouch && !wasRequestingCrouch)
+            _requestedCrouchInAir = !_state.Grounded;
+        else if (!_requestedCrouch && wasRequestingCrouch)
+            _requestedCrouchInAir = false;
     }
 
     public void UpdateBody(float deltaTime)
@@ -152,8 +160,31 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
                 var wasInAir = !_lastState.Grounded;
                 if (moving && crouching && (wasStanding || wasInAir))
                 {
+                    Debug.DrawRay(transform.position, currentVelocity, Color.red, 5f);
+                    Debug.DrawRay(transform.position, _lastState.Velocity, Color.green, 5f);
+
                     _state.Stance = Stance.Slide;
 
+                    // When landing on stable the character motor projects the velocity onto a flat ground plane
+                    // See: KinematicCharacterMotor.HandleVelocityProjection()
+                    // Normally this would be good but sliding in an intentional bit of the game
+                    // I want the player to carry some momentum when falling to make the physics more intuitive for the player
+                    // Reproject the last frames (falling) velocity onto the ground normal to slide.
+                    if (wasInAir)
+                    {
+                        currentVelocity = Vector3.ProjectOnPlane
+                        (
+                            vector : _lastState.Velocity,
+                            planeNormal: motor.GroundingStatus.GroundNormal
+                        );
+                    }
+
+                    var effectiveSlideStartSpeed = slideStartSpeed;
+                    if (!_lastState.Grounded && !_requestedCrouchInAir)
+                    {
+                        effectiveSlideStartSpeed = 0f;
+                        _requestedCrouchInAir = false;
+                    }
                     var slideSpeed = Mathf.Max(slideStartSpeed, currentVelocity.magnitude);
                     currentVelocity = motor.GetDirectionTangentToSurface
                     (
@@ -206,7 +237,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
                     // Target velocity is the player's movement direction, at the current speed.
                     var currentSpeed = currentVelocity.magnitude;
                     var targetVelocity = groundedMovement * currentVelocity.magnitude;
-                    var steerForce = (targetVelocity - currentVelocity) * slideSteerAcceleration;
+                    var steerForce = (targetVelocity - currentVelocity) * slideSteerAcceleration * deltaTime;
                     // Add steer force, but clamp speed so the slide doesn't accelerate due to the direct movement input
                     currentVelocity += steerForce;
                     currentVelocity = Vector3.ClampMagnitude(currentVelocity, currentSpeed);
@@ -238,16 +269,37 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
                 );
 
                 // Calculate movement force
+                // Will be changed depending on velocity
                 var movementForce = planarMovement * airAcceleration * deltaTime;
 
+                //If moving slower than the max air speed, treat movementForce as a simple steering force.
+                if (currentPlanarVelocity.magnitude < airSpeed)
+                {
                 // Add it to the planar velocity for a target velocity.
                 var targetPlanarVelocity = currentPlanarVelocity + movementForce;
 
                 // Limit target velocity to air speed.
                 targetPlanarVelocity = Vector3.ClampMagnitude(targetPlanarVelocity, airSpeed);
 
+                movementForce = targetPlanarVelocity - currentPlanarVelocity;
+                }
+                // Otherwise, nerf the movement force when it is in the direction of the current planar velocity
+                // to prevent accelerating further beyond the max air speed
+                else if (Vector3.Dot(currentPlanarVelocity, movementForce) > 0f)
+                {
+                    // Project movement force onto the plane whose normal is the current planar velocity
+                    var constrainedMovementForce = Vector3.ProjectOnPlane
+                    (
+                        vector: movementForce,
+                        planeNormal: currentPlanarVelocity.normalized
+                    );
+
+                    movementForce = constrainedMovementForce;
+                }
+
+
                 // Steer towards currrent velocity.
-                currentVelocity += targetPlanarVelocity - currentPlanarVelocity;
+                currentVelocity += movementForce;
             }
             // Gravity.
             var effectiveGravity = gravity;
@@ -262,6 +314,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
         {
             _requestedJump = false;     // Unset jump request.
             _requestedCrouch = false;   // And request the character uncrouched.
+            _requestedCrouchInAir = false;
 
             // unstick the player from the ground.
             motor.ForceUnground(time: 0.1f);
@@ -353,6 +406,7 @@ public class PlayerCharacter : MonoBehaviour, ICharacterController
 
         // Update state to reflect relevant motor properties.
         _state.Grounded = motor.GroundingStatus.IsStableOnGround;
+        _state.Velocity = motor.Velocity;
         // And update the _lastState to store the character state snapshot taken at
         // the beggining of this character update
         _lastState = _tempState;
